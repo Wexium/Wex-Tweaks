@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QSettings, QTranslator, QLocale
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -184,156 +185,147 @@ class MainWindow(QMainWindow):
         self.enable_service_button.setText(self.tr("Enable Selected Service"))
         self.disable_service_button.setText(self.tr("Disable Selected Service"))
         self.create_service_button.setText(self.tr("Create New Service"))
-        self.create_service_button.setText(self.tr("Create New Service"))
         self.delete_service_button.setText(self.tr("Delete Selected Service"))
 
-    def run_command(self, command):
-        """
-        Run a command with polkit for administrative privileges
-        """
-        try:
-            command = f'pkexec {command}'
-            result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return result.stdout.decode('utf-8')
-        except subprocess.CalledProcessError as e:
-            error_message = f"An error occurred: {e.stderr.decode('utf-8')}"
-            QMessageBox.critical(self, "Error", error_message)
-            return error_message
+    def load_settings(self):
+        self.settings.beginGroup("MainWindow")
+        self.resize(self.settings.value("size", self.size()))
+        self.move(self.settings.value("pos", self.pos()))
+        self.settings.endGroup()
+
+    def closeEvent(self, event):
+        self.settings.beginGroup("MainWindow")
+        self.settings.setValue("size", self.size())
+        self.settings.setValue("pos", self.pos())
+        self.settings.endGroup()
 
     def update_mirrorlist(self):
-        result = self.run_command("reflector --latest 5 --sort rate --save /etc/pacman.d/mirrorlist")
-        self.repo_label.setText(result or "Mirrorlist updated successfully")
+        try:
+            subprocess.run(["sudo", "reflector", "--verbose", "--latest", "5", "--sort", "rate", "--save", "/etc/pacman.d/mirrorlist"], check=True)
+            QMessageBox.information(self, "Success", "Mirrorlist updated successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", "Failed to update mirrorlist")
 
     def update_system(self):
-        result = self.run_command("pacman -Syu")
-        self.repo_label.setText(result or "System updated successfully")
+        try:
+            subprocess.run(["sudo", "pacman", "-Syu"], check=True)
+            QMessageBox.information(self, "Success", "System updated successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", "Failed to update system")
 
     def install_package(self):
-        package_name, ok = QInputDialog.getText(self, self.tr("Install Package"), self.tr("Enter the package name:"))
-        if ok and package_name:
-            result = self.run_command(f"pacman -S {package_name}")
-            self.repo_label.setText(result or f"{package_name} installed successfully")
+        package, ok = QInputDialog.getText(self, "Install Package", "Enter package name:")
+        if ok and package:
+            try:
+                subprocess.run(["yay", "-S", package], check=True)
+                QMessageBox.information(self, "Success", f"Package '{package}' installed successfully")
+            except subprocess.CalledProcessError:
+                QMessageBox.critical(self, "Error", f"Failed to install package '{package}'")
+
 
     def install_aur_helpers(self):
         selected_helpers = [item.text() for item in self.aur_helpers_list.selectedItems()]
-        if not selected_helpers:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No AUR helper selected"))
-            return
         for helper in selected_helpers:
-            result = self.run_command(f"pacman -S {helper}")
-            self.aur_helpers_label.setText(result or f"{helper} installed successfully")
+            try:
+                subprocess.run(["git", "clone", f"https://aur.archlinux.org/{helper}.git"], check=True)
+                subprocess.run(["makepkg", "-si", "--noconfirm"], cwd=f"./{helper}", check=True)
+                QMessageBox.information(self, "Success", f"AUR helper '{helper}' installed successfully")
+            except subprocess.CalledProcessError:
+                QMessageBox.critical(self, "Error", f"Failed to install AUR helper '{helper}'")
 
     def install_selected_programs(self):
-        selected_programs = [item.text().lower() for item in self.popular_programs_list.selectedItems()]
-        if not selected_programs:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No program selected"))
-            return
+        selected_programs = [item.text() for item in self.popular_programs_list.selectedItems()]
         for program in selected_programs:
-            package_name = {
-                "steam": "steam",
-                "proton": "proton-ge-custom-bin",
-                "discord": "discord",
-                "visual studio code": "visual-studio-code-bin",
-                "gimp": "gimp",
-                "blender": "blender",
-                "lutris": "lutris",
-                "obs studio": "obs-studio",
-                "krita": "krita",
-                # Add more mappings as required
-            }.get(program, program)
-            result = self.run_command(f"pacman -S {package_name}")
-            self.popular_programs_label.setText(result or f"{program} installed successfully")
+            try:
+                subprocess.run(["sudo", "pacman", "-S", program.lower().replace(" ", "-")], check=True)
+                QMessageBox.information(self, "Success", f"Program '{program}' installed successfully")
+            except subprocess.CalledProcessError:
+                QMessageBox.critical(self, "Error", f"Failed to install program '{program}'")
 
     def refresh_services_list(self):
         self.services_list.clear()
-        services = self.get_services()
-        for service in services:
-            QListWidgetItem(service, self.services_list)
-
-    def get_services(self):
-        """
-        Get the list of all systemd services
-        """
-        result = self.run_command("systemctl list-units --type=service --all --no-pager")
-        services = []
-        for line in result.split("\n"):
-            if ".service" in line:
-                service_name = line.split()[0]
-                services.append(service_name)
-        return services
-
-    def manage_service(self, action):
-        selected_items = self.services_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No service selected"))
-            return
-        service = selected_items[0].text()
-        result = self.run_command(f'systemctl {action} {service}')
-        self.services_label.setText(result or f"{service} {action}ed successfully")
-        self.refresh_services_list()
+        try:
+            result = subprocess.run(["systemctl", "list-unit-files", "--type=service", "--state=enabled,disabled"], capture_output=True, text=True, check=True)
+            for line in result.stdout.split("\n")[1:]:
+                if line:
+                    service_name = line.split()[0]
+                    item = QListWidgetItem(service_name)
+                    self.services_list.addItem(item)
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", "Failed to retrieve services list")
 
     def start_service(self):
-        self.manage_service('start')
+        service = self.services_list.currentItem().text()
+        try:
+            subprocess.run(["sudo", "systemctl", "start", service], check=True)
+            QMessageBox.information(self, "Success", f"Service '{service}' started successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", f"Failed to start service '{service}'")
 
     def stop_service(self):
-        self.manage_service('stop')
+        service = self.services_list.currentItem().text()
+        try:
+            subprocess.run(["sudo", "systemctl", "stop", service], check=True)
+            QMessageBox.information(self, "Success", f"Service '{service}' stopped successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", f"Failed to stop service '{service}'")
 
     def restart_service(self):
-        self.manage_service('restart')
+        service = self.services_list.currentItem().text()
+        try:
+            subprocess.run(["sudo", "systemctl", "restart", service], check=True)
+            QMessageBox.information(self, "Success", f"Service '{service}' restarted successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", f"Failed to restart service '{service}'")
 
     def enable_service(self):
-        self.manage_service('enable')
+        service = self.services_list.currentItem().text()
+        try:
+            subprocess.run(["sudo", "systemctl", "enable", service], check=True)
+            QMessageBox.information(self, "Success", f"Service '{service}' enabled successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", f"Failed to enable service '{service}'")
 
     def disable_service(self):
-        self.manage_service('disable')
+        service = self.services_list.currentItem().text()
+        try:
+            subprocess.run(["sudo", "systemctl", "disable", service], check=True)
+            QMessageBox.information(self, "Success", f"Service '{service}' disabled successfully")
+        except subprocess.CalledProcessError:
+            QMessageBox.critical(self, "Error", f"Failed to disable service '{service}'")
 
     def create_service(self):
-        service_name, ok = QInputDialog.getText(self, self.tr("Create Service"), self.tr("Enter the service name:"))
+        service_name, ok = QInputDialog.getText(self, "Create New Service", "Enter service name (e.g., my_service):")
         if ok and service_name:
-            service_content, ok2 = QInputDialog.getMultiLineText(self, self.tr("Create Service"), self.tr("Enter the service configuration:"))
-            if ok2 and service_content:
-                with open(f"/etc/systemd/system/{service_name}.service", "w") as f:
-                    f.write(service_content)
-                result = self.run_command(f"systemctl daemon-reload && systemctl enable {service_name}")
-                self.services_label.setText(result or f"{service_name} created and enabled successfully")
+            service_content, ok = QInputDialog.getMultiLineText(self, "Create New Service", "Enter service file content:", 
+            "[Unit]\nDescription=My custom service\n\n[Service]\nExecStart=/path/to/executable\n\n[Install]\nWantedBy=multi-user.target")
+        if ok and service_content:
+            service_path = f"/etc/systemd/system/{service_name}.service"
+            try:
+                with open(service_path, "w") as service_file:
+                    service_file.write(service_content)
+                subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
                 self.refresh_services_list()
+                QMessageBox.information(self, "Success", f"Service '{service_name}' created successfully")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create service '{service_name}': {e}")
+
 
     def delete_service(self):
-        selected_items = self.services_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No service selected"))
-            return
-        service = selected_items[0].text()
-        result = self.run_command(f'systemctl disable {service} && rm /etc/systemd/system/{service}')
-        self.services_label.setText(result or f"{service} deleted successfully")
-        self.refresh_services_list()
-
-    def load_settings(self):
-        repo = self.settings.value("repository", "core")
-        self.repo_combobox.setCurrentText(repo)
-        chaotic_aur = self.settings.value("chaotic_aur", False, type=bool)
-        self.chaotic_aur_checkbox.setChecked(chaotic_aur)
-
-    def closeEvent(self, event):
-        self.settings.setValue("repository", self.repo_combobox.currentText())
-        self.settings.setValue("chaotic_aur", self.chaotic_aur_checkbox.isChecked())
-        event.accept()
+        service = self.services_list.currentItem().text()
+        confirm = QMessageBox.question(self, "Delete Service", f"Are you sure you want to delete the service '{service}'?", QMessageBox.Yes | QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            try:
+                subprocess.run(["sudo", "systemctl", "disable", service], check=True)
+                subprocess.run(["sudo", "rm", f"/etc/systemd/system/{service}"], check=True)
+                QMessageBox.information(self, "Success", f"Service '{service}' deleted successfully")
+                self.refresh_services_list()
+            except subprocess.CalledProcessError:
+                QMessageBox.critical(self, "Error", f"Failed to delete service '{service}'")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # Load the default language based on the locale
-    translator = QTranslator()
-    locale = QLocale.system().name()
-    
-    if "ru" in locale:
-        translator.load("wex_tweaks_ru.qm")
-    else:
-        translator.load("wex_tweaks_en.qm")
-        
-    app.installTranslator(translator)
-
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
